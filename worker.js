@@ -1,6 +1,6 @@
 /**
- * lazy caching proxy for TheSportsDB.
- * This worker fetches upcoming events from ALL leagues to provide maximum variety.
+ * Rugby Hub - lazy caching proxy for TheSportsDB.
+ * This worker fetches upcoming events from rugby and football leagues only.
  */
 
 const API_KEY = THE_SPORTS_DB_API_KEY; 
@@ -43,9 +43,9 @@ async function handleRequest(event) {
 
     console.log(`Found ${allLeagues.length} leagues. Now fetching upcoming events for each...`);
 
-    // STEP 2: Get the next events for each league
+    // STEP 2: Get the next events for each league (filtered for rugby/football)
     const allEvents = await fetchEventsForLeagues(allLeagues);
-    console.log(`Successfully fetched a total of ${allEvents.length} events.`);
+    console.log(`Successfully fetched a total of ${allEvents.length} rugby/football events.`);
 
     // STEP 3: Combine, create a response, and cache it.
     const responseBody = JSON.stringify({ events: allEvents });
@@ -101,27 +101,31 @@ async function getAllLeagues(cache) {
 }
 
 /**
- * Iterates through leagues and fetches upcoming events for each one.
+ * Iterates through leagues and fetches upcoming events for rugby and football leagues only.
  */
 async function fetchEventsForLeagues(leagues) {
   const allEvents = [];
+  const rugbyFootballSports = [
+    'American Football', 'Rugby Union', 'Rugby League', 'Australian Football'
+  ];
+  
   for (const league of leagues) {
-    // Only fetch for leagues we care about if you want to filter
-    // e.g., if (league.strSport === "Soccer" || league.strSport === "Basketball")
-    
-    const eventsUrl = `https://www.thesportsdb.com/api/v1/json/${API_KEY}/eventsnextleague.php?id=${league.idLeague}`;
-    try {
-      const response = await fetch(eventsUrl);
-      if (response.ok) {
-        const data = await response.json();
-        if (data.events) {
-          allEvents.push(...data.events);
+    // Only fetch for rugby and football leagues
+    if (rugbyFootballSports.includes(league.strSport)) {
+      const eventsUrl = `https://www.thesportsdb.com/api/v1/json/${API_KEY}/eventsnextleague.php?id=${league.idLeague}`;
+      try {
+        const response = await fetch(eventsUrl);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.events) {
+            allEvents.push(...data.events);
+          }
         }
+        // IMPORTANT: Respect the rate limit!
+        await sleep(API_CALL_DELAY_MS);
+      } catch (e) {
+          console.warn(`Could not fetch events for league ${league.idLeague}: ${e.message}`);
       }
-      // IMPORTANT: Respect the rate limit!
-      await sleep(API_CALL_DELAY_MS);
-    } catch (e) {
-        console.warn(`Could not fetch events for league ${league.idLeague}: ${e.message}`);
     }
   }
   return allEvents;
