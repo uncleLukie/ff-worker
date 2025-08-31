@@ -1,200 +1,148 @@
 /**
- * caching proxy for TheSportsDB
- * intercepts requests, caches API responses, and saves me API calls.
+ * lazy caching proxy for TheSportsDB.
+ * This worker fetches upcoming events from ALL leagues to provide maximum variety.
  */
 
+const API_KEY = THE_SPORTS_DB_API_KEY; 
+
+const EVENTS_CACHE_TTL_SECONDS = 7200; 
+
+const LEAGUES_CACHE_TTL_SECONDS = 86400;
+
+const API_CALL_DELAY_MS = 100;
+
+const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+
 addEventListener('fetch', event => {
-    // We need to handle pre-flight CORS requests for browsers
-    if (event.request.method === 'OPTIONS') {
-      event.respondWith(handleOptions(event.request));
-    } else {
-      event.respondWith(handleRequest(event));
-    }
-  });
+  if (event.request.method === 'OPTIONS') {
+    event.respondWith(handleOptions(event.request));
+  } else {
+    event.respondWith(handleRequest(event));
+  }
+});
+
+async function handleRequest(event) {
+  const cache = caches.default;
+  const request = event.request;
+
+  // Check the cache for the final, combined data first.
+  let response = await cache.match(request);
+  if (response) {
+    console.log("CACHE HIT: Serving the big combined list of events from cache.");
+    return response;
+  }
+
+  console.log("CACHE MISS: Generating a new list of all upcoming events. This might take a moment...");
   
-  /**
-   * Handles the main data request.
-   */
-  async function handleRequest(event) {
-    const request = event.request;
-    const cache = caches.default;
-    const url = new URL(request.url);
-    const day = url.searchParams.get('day');
-    const variety = url.searchParams.get('variety'); // New parameter for variety mode
-    
-    // Check cache first for any request
-    const cacheKey = new Request(url.toString(), request);
-    const cachedResponse = await cache.match(cacheKey);
-    if (cachedResponse) {
-      return cachedResponse;
+  try {
+    // STEP 1: Get all leagues (from cache or API)
+    const allLeagues = await getAllLeagues(cache);
+    if (!allLeagues || allLeagues.length === 0) {
+      throw new Error("Could not retrieve the list of leagues.");
     }
+
+    console.log(`Found ${allLeagues.length} leagues. Now fetching upcoming events for each...`);
+
+    // STEP 2: Get the next events for each league
+    const allEvents = await fetchEventsForLeagues(allLeagues);
+    console.log(`Successfully fetched a total of ${allEvents.length} events.`);
+
+    // STEP 3: Combine, create a response, and cache it.
+    const responseBody = JSON.stringify({ events: allEvents });
+    response = new Response(responseBody, {
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': `s-maxage=${EVENTS_CACHE_TTL_SECONDS}`,
+        ...corsHeaders,
+      },
+    });
+
+    // Cache the final result.
+    event.waitUntil(cache.put(request, response.clone()));
     
-    // If no specific day is requested, fetch from multiple days for variety
-    if (!day) {
-      const allEvents = [];
-      const today = getTodaysDate();
-      
-      // For max variety, fetch from past 7 days + next 23 days (total 30 days)
-      // For default variety, fetch from past 3 days + next 4 days (total 7 days)
-      const pastDays = variety === 'max' ? 7 : 3;
-      const futureDays = variety === 'max' ? 23 : 4;
-      const totalDays = pastDays + 1 + futureDays;
-      
-      console.log(`Fetching events for ${totalDays} days (${pastDays} past + today + ${futureDays} future) for variety mode: ${variety}`);
-      
-      // Fetch from past and future dates for maximum variety
-      // Use Promise.allSettled for better performance and error handling
-      const datePromises = [];
-      
-      // Fetch past dates
-      for (let i = pastDays; i > 0; i--) {
-        const date = new Date();
-        date.setDate(date.getDate() - i);
-        const dateStr = date.toISOString().slice(0, 10);
-        
-        const apiUrl = `https://www.thesportsdb.com/api/v1/json/${THE_SPORTS_DB_API_KEY}/eventsday.php?d=${dateStr}`;
-        datePromises.push(
-          fetch(apiUrl)
-            .then(response => response.json())
-            .then(data => ({ success: true, data, date: dateStr }))
-            .catch(error => ({ success: false, error: error.message, date: dateStr }))
-        );
-      }
-      
-      // Fetch today
-      const todayApiUrl = `https://www.thesportsdb.com/api/v1/json/${THE_SPORTS_DB_API_KEY}/eventsday.php?d=${today}`;
-      datePromises.push(
-        fetch(todayApiUrl)
-          .then(response => response.json())
-          .then(data => ({ success: true, data, date: today }))
-          .catch(error => ({ success: false, error: error.message, date: today }))
-      );
-      
-      // Fetch future dates
-      for (let i = 1; i <= futureDays; i++) {
-        const date = new Date();
-        date.setDate(date.getDate() + i);
-        const dateStr = date.toISOString().slice(0, 10);
-        
-        const apiUrl = `https://www.thesportsdb.com/api/v1/json/${THE_SPORTS_DB_API_KEY}/eventsday.php?d=${dateStr}`;
-        datePromises.push(
-          fetch(apiUrl)
-            .then(response => response.json())
-            .then(data => ({ success: true, data, date: dateStr }))
-            .catch(error => ({ success: false, error: error.message, date: dateStr }))
-        );
-      }
-      
-      // Wait for all requests to complete
-      const results = await Promise.allSettled(datePromises);
-      
-      // Process successful results
-      let successfulFetches = 0;
-      results.forEach(result => {
-        if (result.status === 'fulfilled' && result.value.success && result.value.data.events) {
-          allEvents.push(...result.value.data.events);
-          successfulFetches++;
-        }
-      });
-      
-      console.log(`Successfully fetched from ${successfulFetches}/${totalDays} dates`);
-      
-      // Remove duplicates and return
-      const uniqueEvents = allEvents.filter((event, index, self) => 
-        index === self.findIndex(e => e.idEvent === event.idEvent)
-      );
-      
-      console.log(`Returning ${uniqueEvents.length} unique events`);
-      
-      const response = new Response(JSON.stringify({ 
-        events: uniqueEvents,
-        meta: {
-          totalFetched: allEvents.length,
-          uniqueEvents: uniqueEvents.length,
-          daysFetched: successfulFetches,
-          cacheTime: new Date().toISOString()
-        }
-      }), {
-        headers: { 
-          'Content-Type': 'application/json', 
-          ...corsHeaders,
-          'Cache-Control': 'public, max-age=3600' // Cache for 1 hour
-        }
-      });
-      
-      // Cache the response
-      event.waitUntil(cache.put(cacheKey, response.clone()));
-      
-      return response;
-    }
+    return response;
+
+  } catch (error) {
+    console.error("Failed to fetch and process events:", error);
+    return new Response(JSON.stringify({ error: 'Failed to fetch data from the upstream API.' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json', ...corsHeaders },
+    });
+  }
+}
+
+/**
+ * Fetches the master list of all leagues, caching it for a long time.
+ */
+async function getAllLeagues(cache) {
+  const leagueUrl = `https://www.thesportsdb.com/api/v1/json/${API_KEY}/all_leagues.php`;
+  const cacheKey = new Request(leagueUrl);
+  
+  let cached = await cache.match(cacheKey);
+  if (cached) {
+    console.log("LEAGUES: Cache hit.");
+    const data = await cached.json();
+    return data.leagues;
+  }
+
+  console.log("LEAGUES: Cache miss. Fetching from API.");
+  const response = await fetch(cacheKey);
+  if (!response.ok) return null;
+  
+  const newResponse = new Response(response.body, response);
+  newResponse.headers.set('Cache-Control', `s-maxage=${LEAGUES_CACHE_TTL_SECONDS}`);
+  
+  // Asynchronously cache the new response
+  const cachePromise = cache.put(cacheKey, newResponse.clone());
+  event.waitUntil(cachePromise);
+
+  const data = await newResponse.json();
+  return data.leagues;
+}
+
+/**
+ * Iterates through leagues and fetches upcoming events for each one.
+ */
+async function fetchEventsForLeagues(leagues) {
+  const allEvents = [];
+  for (const league of leagues) {
+    // Only fetch for leagues we care about if you want to filter
+    // e.g., if (league.strSport === "Soccer" || league.strSport === "Basketball")
     
-    // Handle specific day request
+    const eventsUrl = `https://www.thesportsdb.com/api/v1/json/${API_KEY}/eventsnextleague.php?id=${league.idLeague}`;
     try {
-      const apiUrl = `https://www.thesportsdb.com/api/v1/json/${THE_SPORTS_DB_API_KEY}/eventsday.php?d=${day}`;
-      const apiResponse = await fetch(apiUrl);
-      const data = await apiResponse.json();
-      
-      const response = new Response(JSON.stringify(data), {
-        headers: { 
-          'Content-Type': 'application/json', 
-          ...corsHeaders,
-          'Cache-Control': 'public, max-age=1800' // Cache for 30 minutes
+      const response = await fetch(eventsUrl);
+      if (response.ok) {
+        const data = await response.json();
+        if (data.events) {
+          allEvents.push(...data.events);
         }
-      });
-      
-      // Cache the response
-      event.waitUntil(cache.put(cacheKey, response.clone()));
-      
-      return response;
-    } catch (error) {
-      return new Response(JSON.stringify({ error: 'Failed to fetch data' }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders }
-      });
+      }
+      // IMPORTANT: Respect the rate limit!
+      await sleep(API_CALL_DELAY_MS);
+    } catch (e) {
+        console.warn(`Could not fetch events for league ${league.idLeague}: ${e.message}`);
     }
   }
-  
-  /**
-   * CORS headers to allow your website to make requests to this worker.
-   * IMPORTANT: In a production app, you might want to change '*' to your actual domain
-   * e.g., 'https://unclelukie.github.io'
-   */
-  const corsHeaders = {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-  };
-  
-  /**
-   * Handles the pre-flight OPTIONS request sent by browsers.
-   */
-  function handleOptions(request) {
-    if (
-      request.headers.get('Origin') !== null &&
-      request.headers.get('Access-Control-Request-Method') !== null &&
-      request.headers.get('Access-Control-Request-Headers') !== null
-    ) {
-      // Handle CORS pre-flight request.
-      return new Response(null, {
-        headers: corsHeaders,
-      });
-    } else {
-      // Handle standard OPTIONS request.
-      return new Response(null, {
-        headers: {
-          Allow: 'GET, HEAD, OPTIONS',
-        },
-      });
-    }
+  return allEvents;
+}
+
+
+// --- CORS HANDLING ---
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
+
+function handleOptions(request) {
+  if (
+    request.headers.get('Origin') !== null &&
+    request.headers.get('Access-Control-Request-Method') !== null &&
+    request.headers.get('Access-Control-Request-Headers') !== null
+  ) {
+    return new Response(null, { headers: corsHeaders });
+  } else {
+    return new Response(null, { headers: { Allow: 'GET, HEAD, OPTIONS' } });
   }
-  
-  /**
-   * A helper function to get today's date in YYYY-MM-DD format.
-   */
-  function getTodaysDate() {
-    const today = new Date();
-    const year = today.getFullYear();
-    const month = String(today.getMonth() + 1).padStart(2, '0');
-    const day = String(today.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  }
+}
