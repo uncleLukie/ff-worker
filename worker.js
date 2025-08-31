@@ -37,12 +37,44 @@ addEventListener('fetch', event => {
       // Determine how many days to fetch based on variety parameter
       const daysToFetch = variety === 'max' ? 30 : 7; // Default to 7 days for efficiency
       
-      console.log(`Fetching events for ${daysToFetch} days starting from ${today}`);
+      console.log(`Fetching events for ${pastDays + 1 + futureDays} days (${pastDays} past + today + ${futureDays} future) for variety mode: ${variety}`);
       
-      // Fetch from today + next N days for variety
+      // Fetch from past and future dates for maximum variety
       // Use Promise.allSettled for better performance and error handling
       const datePromises = [];
-      for (let i = 0; i < daysToFetch; i++) {
+      
+      // For max variety, fetch from past 7 days + next 23 days (total 30 days)
+      // For default variety, fetch from past 3 days + next 4 days (total 7 days)
+      const pastDays = variety === 'max' ? 7 : 3;
+      const futureDays = variety === 'max' ? 23 : 4;
+      
+      // Fetch past dates
+      for (let i = pastDays; i > 0; i--) {
+        const date = new Date();
+        date.setDate(date.getDate() - i);
+        const dateStr = date.toISOString().slice(0, 10);
+        
+        const apiUrl = `https://www.thesportsdb.com/api/v1/json/${THE_SPORTS_DB_API_KEY}/eventsday.php?d=${dateStr}`;
+        datePromises.push(
+          fetch(apiUrl)
+            .then(response => response.json())
+            .then(data => ({ success: true, data, date: dateStr }))
+            .catch(error => ({ success: false, error: error.message, date: dateStr }))
+        );
+      }
+      
+      // Fetch today
+      const today = getTodaysDate();
+      const todayApiUrl = `https://www.thesportsdb.com/api/v1/json/${THE_SPORTS_DB_API_KEY}/eventsday.php?d=${today}`;
+      datePromises.push(
+        fetch(todayApiUrl)
+          .then(response => response.json())
+          .then(data => ({ success: true, data, date: today }))
+          .catch(error => ({ success: false, error: error.message, date: today }))
+      );
+      
+      // Fetch future dates
+      for (let i = 1; i <= futureDays; i++) {
         const date = new Date();
         date.setDate(date.getDate() + i);
         const dateStr = date.toISOString().slice(0, 10);
