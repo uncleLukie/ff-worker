@@ -1,6 +1,6 @@
 /**
- * Rugby Hub - lazy caching proxy for TheSportsDB.
- * This worker fetches upcoming events from rugby and football leagues only.
+ * OzFootie - lazy caching proxy for TheSportsDB.
+ * This worker fetches upcoming events from Australian football leagues only.
  */
 
 const API_KEY = THE_SPORTS_DB_API_KEY; 
@@ -43,9 +43,9 @@ async function handleRequest(event) {
 
     console.log(`Found ${allLeagues.length} leagues. Now fetching upcoming events for each...`);
 
-    // STEP 2: Get the next events for each league (filtered for rugby/football)
+    // STEP 2: Get the next events for each league (filtered for Australian football)
     const allEvents = await fetchEventsForLeagues(allLeagues);
-    console.log(`Successfully fetched a total of ${allEvents.length} rugby/football events.`);
+    console.log(`Successfully fetched a total of ${allEvents.length} Australian football events.`);
 
     // STEP 3: Combine, create a response, and cache it.
     const responseBody = JSON.stringify({ events: allEvents });
@@ -101,17 +101,17 @@ async function getAllLeagues(cache) {
 }
 
 /**
- * Iterates through leagues and fetches upcoming events for rugby and football leagues only.
+ * Iterates through leagues and fetches upcoming events for Australian football leagues only.
  */
 async function fetchEventsForLeagues(leagues) {
   const allEvents = [];
-  const rugbyFootballSports = [
-    'American Football', 'Rugby Union', 'Rugby League', 'Australian Football'
+  const australianFootballSports = [
+    'Australian Football', 'Rugby Union', 'Rugby League'
   ];
   
   for (const league of leagues) {
-    // Only fetch for rugby and football leagues
-    if (rugbyFootballSports.includes(league.strSport)) {
+    // Only fetch for Australian football leagues
+    if (australianFootballSports.includes(league.strSport)) {
       const eventsUrl = `https://www.thesportsdb.com/api/v1/json/${API_KEY}/eventsnextleague.php?id=${league.idLeague}`;
       try {
         const response = await fetch(eventsUrl);
